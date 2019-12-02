@@ -1,4 +1,4 @@
-from functools import lru_cache
+from functools import lru_cache, partial
 import logging
 from typing import Union
 
@@ -27,27 +27,38 @@ class ASIAxis(Axis):
         super().__init__(parent.driver, *args, parent, **kwargs)
         self._axis = axis
 
+        self._info = None
+
     ##
 
     async def test_open(self):
         try:
             await self.open()
+            if not await self.get_property("motor_control"):
+                raise UnsupportedDeviceError("axis not connected")
             logger.info(f".. {self.info}")
         finally:
             await self.close()
 
+    async def _open(self):
+        self._info = DeviceInfo(vendor="ASI", model=self.axis)
+
     async def _close(self):
-        print(f"{self.axis} closed")
+        self._info = None
 
     ##
 
     async def enumerate_properties(self):
-        return tuple()
+        return ("motor_control",)
+
+    async def _get_motor_control(self):
+        status = self.parent.send_cmd("MC", f"{self.axis}?")
+        return status == "1"
 
     ##
 
     async def home(self, blocking=True):
-        await self.parent._send_cmd("!", self.axis)
+        self.parent.send_cmd("!", self.axis)
         if blocking:
             await self.wait()
 
@@ -57,15 +68,16 @@ class ASIAxis(Axis):
     async def set_absolute_position(self, pos, blocking=True):
         # 0.1 micron per unit step
         pos *= 1000 * 10
-        await self.parent._send_cmd("M", **{self.axis: pos})
+        self.parent.send_cmd("M", **{self.axis: pos})
         if blocking:
             await self.wait()
 
     async def set_relative_position(self, pos, blocking=True):
         # 0.1 micron per unit step
         pos *= 1000 * 10
-        await self.parent._send_cmd("R", **{self.axis: pos})
+        self.parent.send_cmd("R", **{self.axis: pos})
         if blocking:
+            print('start blocking')
             await self.wait()
 
     ##
@@ -74,7 +86,7 @@ class ASIAxis(Axis):
         pass
 
     async def set_velocity(self, vel):
-        pass
+        self.parent.send_cmd("S", vel)
 
     ##
 
@@ -87,7 +99,7 @@ class ASIAxis(Axis):
     ##
 
     async def set_origin(self):
-        pass
+        self.parent.send_cmd("HM", f"{self.axis}+")
 
     async def get_limits(self):
         pass
@@ -101,10 +113,11 @@ class ASIAxis(Axis):
         pass
 
     async def stop(self, emergency=False):
-        pass
+        self.parent.send_cmd("\\")
 
     async def wait(self):
-        while self.busy:
+        print("start waiting")
+        while self.is_busy:
             await trio.sleep(1)
 
     ##
@@ -114,14 +127,16 @@ class ASIAxis(Axis):
         return self._axis
 
     @property
-    def busy(self):
-        logger.debug(f"axis: {self.axis}, busy: {self.parent.busy}")
-        return self.parent.busy
+    def info(self):
+        return self._info
 
     @property
-    def info(self):
-        # TODO
-        return self.axis
+    def is_busy(self):
+        return self.parent.is_busy
+
+    @property
+    def is_opened(self):
+        return self.info is not None
 
 
 class ASISerialCommandController(MotionController):
@@ -131,28 +146,41 @@ class ASISerialCommandController(MotionController):
         ser = Serial()
         ser.port = port
         ser.baudrate = baudrate
-        self._handle = ser
+        self._handle, self._lock = ser, trio.StrictFIFOLock()
+
+        self._info = None
 
     ##
 
     async def _open(self):
         await trio.to_thread.run_sync(self.handle.open)
 
+        # create info
+        model = self.send_cmd("BU")
+        version = self.send_cmd("V")
+        self._info = DeviceInfo(vendor="ASI", model=model, version=version)
+
     async def _close(self):
+        self._info = None
         await trio.to_thread.run_sync(self.handle.close)
 
     ##
 
     async def enumerate_properties(self):
-        return ("build",)
-
-    async def _get_build(self):
-        return await self._send_cmd("BU")
+        return tuple()
 
     ##
 
     @property
-    def busy(self):
+    def handle(self):
+        return self._handle
+
+    @property
+    def info(self):
+        return self._info
+
+    @property
+    def is_busy(self):
         """
         STATUS is handles quickly in the ASI command parser. The official way to rapid poll.
         """
@@ -161,34 +189,33 @@ class ASISerialCommandController(MotionController):
         return response[0] == ord("B")
 
     @property
-    def handle(self):
-        return self._handle
-
-    @property
     def is_opened(self):
         return self.handle.is_open
 
-    ##
+    @property
+    def lock(self):
+        return self._lock
 
     ##
 
-    async def _send_cmd(self, *args, **kwargs):
+    def send_cmd(self, *args, **kwargs):
         # 1) compact
         args = [str(arg) for arg in args]
-        kwargs = [f"{str(k)}={str(v)}" for k, v in kwargs.items()]
+        kwargs = [f"{str(k)}={v}" for k, v in kwargs.items()]
         # 2) join
         cmd = " ".join(args + kwargs)
         # 3) response format
         cmd = f"{cmd}\r".encode()
-        logger.debug(f"SEND [{cmd}]")
+        logger.debug(f"SEND {cmd}")
         # 4) send
-        await trio.to_thread.run_sync(self.handle.write, cmd)
-        return await self._check_error()
+        self.handle.write(cmd)
+        return self._check_error()
 
-    async def _check_error(self):
-        response = await trio.to_thread.run_sync(self.handle.read_until, b"\r\n")
+    def _check_error(self):
+        response = self.handle.read_until(b"\r\n")
         response = response.replace(b"\r", b"\n")
         response = response.decode("ascii").rstrip()
+        logger.debug(f"RECV {response}")
         if response.startswith(":N"):
             errno = int(response[3:])
             ASISerialCommandController.interpret_error(errno)
@@ -217,8 +244,7 @@ class Tiger(ASISerialCommandController):
             await self.open()
 
             # test controller string
-            response = await self.get_property("build")
-            if response != "TIGER_COMM":
+            if self.info.model != "TIGER_COMM":
                 raise UnsupportedDeviceError
             logger.info(f".. {self.info}")
         finally:
@@ -227,10 +253,10 @@ class Tiger(ASISerialCommandController):
     ##
 
     async def enumerate_properties(self):
-        return await super().enumerate_axes() + ("cards")
+        return ("cards",) + await super().enumerate_properties()
 
     async def _get_cards(self):
-        response = await self._send_cmd("N")
+        response = self.send_cmd("N")
         cards = []
         for line in response.split("\n"):
             # strip card address
@@ -256,6 +282,12 @@ class Tiger(ASISerialCommandController):
     async def enumerate_axes(self) -> Union[ASIAxis]:
         cards = await self.get_property("cards")
 
+        print(">>>")
+        import json  # noqa
+
+        print(json.dumps(cards, indent=4))
+        print("<<<")
+
         axes = []
         for card in cards:
             if card["character"] not in ("SCAN_XY_LED", "STD_ZF"):
@@ -275,16 +307,6 @@ class Tiger(ASISerialCommandController):
             except UnsupportedDeviceError:
                 pass
         return tuple(valid_axes)
-
-    ##
-
-    @property
-    @lru_cache(maxsize=1)
-    def info(self):
-        self.handle.write(b"V\r")
-        version = self.handle.read_until(b"\r\n").decode("ascii").strip()[3:]
-
-        return DeviceInfo(vendor="ASI", model="Tiger", version=version)
 
 
 class ASI(Driver):
