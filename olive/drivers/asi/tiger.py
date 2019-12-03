@@ -43,7 +43,11 @@ class ASIAxis(Axis):
     async def _open(self):
         self._info = DeviceInfo(vendor="ASI", model=self.axis)
 
+        response = self.parent.send_cmd("UM", f"{self.axis}?")
+        logger.debug(f"{self.axis} unit mul: {response}")
+
     async def _close(self):
+        await self.stop()
         self._info = None
 
     ##
@@ -59,16 +63,20 @@ class ASIAxis(Axis):
 
     async def home(self, blocking=True):
         self.parent.send_cmd("!", self.axis)
+        await trio.sleep(0)
         if blocking:
             await self.wait()
 
     async def get_position(self):
-        pass
+        response = self.parent.send_cmd("W", f"{self.axis}?")
+        pos = float(response) / (1000 * 10)
+        return pos
 
     async def set_absolute_position(self, pos, blocking=True):
         # 0.1 micron per unit step
         pos *= 1000 * 10
         self.parent.send_cmd("M", **{self.axis: pos})
+        await trio.sleep(0)
         if blocking:
             await self.wait()
 
@@ -76,36 +84,46 @@ class ASIAxis(Axis):
         # 0.1 micron per unit step
         pos *= 1000 * 10
         self.parent.send_cmd("R", **{self.axis: pos})
+        await trio.sleep(0)
         if blocking:
-            print('start blocking')
             await self.wait()
 
     ##
 
     async def get_velocity(self):
-        pass
+        response = self.parent.send_cmd("S", f"{self.axis}?")
+        return float(response.split("=")[1])
 
     async def set_velocity(self, vel):
-        self.parent.send_cmd("S", vel)
+        self.parent.send_cmd("S", self.axis, vel)
 
     ##
 
     async def get_acceleration(self):
-        pass
+        response = self.parent.send_cmd("AC", f"{self.axis}?")
+        return float(response.split("=")[1])
 
     async def set_acceleration(self, acc):
-        pass
+        self.parent.send_cmd("AC", self.axis, acc)
 
     ##
 
     async def set_origin(self):
         self.parent.send_cmd("HM", f"{self.axis}+")
+        await trio.sleep(0)
 
     async def get_limits(self):
-        pass
+        response = self.parent.send_cmd("SL", f"{self.axis}?")
+        lo = float(response.split("=")[1])
+        response = self.parent.send_cmd("SU", f"{self.axis}?")
+        hi = float(response.split("=")[1])
+        await trio.sleep(0)
+        return lo, hi
 
-    async def set_limits(self):
-        pass
+    async def set_limits(self, lim):
+        lo, hi = tuple(lim)
+        self.parent.send_cmd("SL", self.axis, lo)
+        self.parent.send_cmd("AU", self.axis, hi)
 
     ##
 
@@ -116,8 +134,9 @@ class ASIAxis(Axis):
         self.parent.send_cmd("\\")
 
     async def wait(self):
-        print("start waiting")
         while self.is_busy:
+            pos = await self.get_position()
+            logger.debug(f"{self.axis}: {pos}")
             await trio.sleep(1)
 
     ##
@@ -153,7 +172,7 @@ class ASISerialCommandController(MotionController):
     ##
 
     async def _open(self):
-        await trio.to_thread.run_sync(self.handle.open)
+        self.handle.open()
 
         # create info
         model = self.send_cmd("BU")
@@ -162,7 +181,7 @@ class ASISerialCommandController(MotionController):
 
     async def _close(self):
         self._info = None
-        await trio.to_thread.run_sync(self.handle.close)
+        self.handle.close()
 
     ##
 
@@ -184,9 +203,8 @@ class ASISerialCommandController(MotionController):
         """
         STATUS is handles quickly in the ASI command parser. The official way to rapid poll.
         """
-        self.handle.write(b"/\r")
-        response = self.handle.read_until(b"\r\n")
-        return response[0] == ord("B")
+        response = self.send_cmd("/")
+        return response == "B"
 
     @property
     def is_opened(self):
@@ -202,20 +220,28 @@ class ASISerialCommandController(MotionController):
         # 1) compact
         args = [str(arg) for arg in args]
         kwargs = [f"{str(k)}={v}" for k, v in kwargs.items()]
+
         # 2) join
         cmd = " ".join(args + kwargs)
+
         # 3) response format
         cmd = f"{cmd}\r".encode()
-        logger.debug(f"SEND {cmd}")
+        # logger.debug(f"SEND {cmd}")
+
         # 4) send
         self.handle.write(cmd)
-        return self._check_error()
 
-    def _check_error(self):
+        # 5) ack
         response = self.handle.read_until(b"\r\n")
+        # ... ensure multi-line response is received properly
         response = response.replace(b"\r", b"\n")
         response = response.decode("ascii").rstrip()
-        logger.debug(f"RECV {response}")
+        # logger.debug(f"RECV {response}")
+        response = self._check_error(response)
+
+        return response
+
+    def _check_error(self, response):
         if response.startswith(":N"):
             errno = int(response[3:])
             ASISerialCommandController.interpret_error(errno)

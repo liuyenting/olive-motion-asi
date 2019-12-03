@@ -15,16 +15,27 @@ logger = logging.getLogger(__name__)
 
 
 async def action(axis):
-    print(".. action 0")
-    await axis.set_absolute_position(0)
-    print(".. action 1")
-    await axis.set_absolute_position(10)
-    print(".. action 2")
-    await axis.set_origin()
-    print(".. action 3")
-    await axis.set_relative_position(-10)
-    print(".. action 4")
-    await axis.home()
+    axis_id = axis.axis
+    try:
+        logger.info(f"{axis_id}, 0, open")
+        await axis.open()
+        vel = await axis.get_velocity()
+        logger.info(f"{axis_id}, velocity: {vel}")
+        limits = await axis.get_limits()
+        logger.info(f"{axis_id}, limits: {limits}")
+        logger.info(f"{axis_id}, 1, reset")
+        await axis.set_absolute_position(0)
+        logger.info(f"{axis_id}, 2, shift")
+        await axis.set_absolute_position(600)
+        logger.info(f"{axis_id}, 3, set home")
+        await axis.set_origin()
+        logger.info(f"{axis_id}, 4, shift")
+        await axis.set_relative_position(-10)
+        logger.info(f"{axis_id}, 5, return home")
+        await axis.home()
+    finally:
+        logger.info(f"{axis_id}, 6, close")
+        await axis.close()
 
 
 async def main():
@@ -35,18 +46,9 @@ async def main():
         await controller.open()
         axes = await controller.enumerate_axes()
 
-        print("OPEN")
-        for axis in axes:
-            await axis.open()
-
-        print("MOVE")
         async with trio.open_nursery() as nursery:
             for axis in axes:
                 nursery.start_soon(action, axis)
-
-        print("CLOSE")
-        for axis in axes:
-            await axis.close()
     finally:
         await controller.close()
 
