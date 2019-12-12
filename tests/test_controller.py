@@ -5,7 +5,7 @@ import coloredlogs
 import trio
 
 from olive.devices.errors import UnsupportedDeviceError
-from olive.drivers.asi import Tiger
+from olive.drivers.asi import MS2000, Tiger
 
 coloredlogs.install(
     level="DEBUG", fmt="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"
@@ -19,27 +19,35 @@ async def action(axis):
     try:
         logger.info(f"{axis_id}, 0, open")
         await axis.open()
+
         vel = await axis.get_velocity()
         logger.info(f"{axis_id}, velocity: {vel}")
         limits = await axis.get_limits()
         logger.info(f"{axis_id}, limits: {limits}")
-        logger.info(f"{axis_id}, 1, reset")
-        await axis.set_absolute_position(0)
-        logger.info(f"{axis_id}, 2, shift")
-        await axis.set_absolute_position(600)
-        logger.info(f"{axis_id}, 3, set home")
-        await axis.set_origin()
-        logger.info(f"{axis_id}, 4, shift")
-        await axis.set_relative_position(-10)
-        logger.info(f"{axis_id}, 5, return home")
-        await axis.home()
+
+        await axis.calibrate()
+
+        #logger.info(f"{axis_id}, 1, reset")
+        #await axis.set_absolute_position(0)
+
+        #logger.info(f"{axis_id}, 2, shift")
+        #await axis.set_absolute_position(10)
+
+        #logger.info(f"{axis_id}, 3, set home")
+        #await axis.set_origin()
+
+        #logger.info(f"{axis_id}, 4, rel move to prev origin")
+        #await axis.set_relative_position(-10)
+
+        #logger.info(f"{axis_id}, 5, return home (should move)")
+        #await axis.home()
     finally:
         logger.info(f"{axis_id}, 6, close")
         await axis.close()
 
 
 async def main():
-    controller = Tiger(None, "COM5")
+    controller = MS2000(None, "COM5", baudrate=9600)
 
     await controller.test_open()
     try:
