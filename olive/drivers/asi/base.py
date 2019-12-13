@@ -10,7 +10,7 @@ from olive.devices.errors import (
     OutOfRangeError,
     UnknownCommandError,
 )
-from olive.devices.motion import Axis
+from olive.devices.motion import Axis, LimitStatus
 
 from . import errors
 
@@ -25,13 +25,15 @@ class ASIAxis(Axis):
         self._axis = axis
 
         self._info = None
+        self._multiplier = 1
 
     ##
 
     async def test_open(self):
         try:
             await self.open()
-            if not await self.get_property("motor_control"):
+            flag = self.parent.send_cmd("RS", f"{self.axis}-")
+            if flag == "D":
                 raise UnsupportedDeviceError("axis not connected")
             logger.info(f".. {self.info}")
         finally:
@@ -39,125 +41,153 @@ class ASIAxis(Axis):
 
     async def _open(self):
         self._info = DeviceInfo(vendor="ASI", model=self.axis)
-
-        response = self.parent.send_cmd("UM", f"{self.axis}?")
-        logger.debug(f"{self.axis} unit mul: {response}")
+        self._multiplier = await self.get_property("unit_multiplier")
 
     async def _close(self):
-        await self.stop()
+        self.stop()
         self._info = None
 
     ##
 
     async def enumerate_properties(self):
-        return ("motor_control",)
+        return ("motor_control", "unit_multiplier")
 
     async def _get_motor_control(self):
         status = self.parent.send_cmd("MC", f"{self.axis}?")
         return status == "1"
 
+    async def _get_unit_multiplier(self):
+        unit_mul = self.parent.send_cmd("UM", f"{self.axis}?")
+
+        # ":X=100000.00000 A"
+        unit_mul = unit_mul.split(" ")[0][1:]
+        unit_mul = unit_mul.split("=")[1]
+
+        return float(unit_mul)
+
     ##
 
-    async def home(self, blocking=True):
+    async def go_home(self, blocking=True):
         self.parent.send_cmd("!", self.axis)
         await trio.sleep(0)
         if blocking:
             await self.wait()
 
-    async def get_position(self):
+    def get_position(self):
         response = self.parent.send_cmd("W", f"{self.axis}")
-        print(f".. {response}")
-        pos = float(response) / (1000 * 10)
+        pos = float(response) / self._multiplier
         return pos
 
-    async def set_absolute_position(self, pos, blocking=True):
+    async def move_absolute(self, pos, blocking=True):
         # 0.1 micron per unit step
-        pos *= 1000 * 10
+        pos *= self._multiplier
+        # remove decimal
+        pos = int(pos)
         self.parent.send_cmd("M", **{self.axis: pos})
         await trio.sleep(0)
         if blocking:
             await self.wait()
 
-    async def set_relative_position(self, pos, blocking=True):
+    async def move_relative(self, pos, blocking=True):
         # 0.1 micron per unit step
-        pos *= 1000 * 10
+        pos *= self._multiplier
+        # remove decimal
+        pos = int(pos)
         self.parent.send_cmd("R", **{self.axis: pos})
         await trio.sleep(0)
         if blocking:
             await self.wait()
 
+    def move_continuous(self, vel):
+        self.parent.send_cmd("VE", f"{self.axis}={vel}")
+
     ##
 
-    async def get_velocity(self):
+    def get_velocity(self):
         response = self.parent.send_cmd("S", f"{self.axis}?")
         return float(response.split("=")[1])
 
-    async def set_velocity(self, vel):
+    def set_velocity(self, vel):
         self.parent.send_cmd("S", self.axis, vel)
 
     ##
 
-    async def get_acceleration(self):
+    def get_acceleration(self):
         response = self.parent.send_cmd("AC", f"{self.axis}?")
         return float(response.split("=")[1])
 
-    async def set_acceleration(self, acc):
+    def set_acceleration(self, acc):
         self.parent.send_cmd("AC", self.axis, acc)
 
     ##
 
-    async def set_origin(self):
-        self.parent.send_cmd("HM", f"{self.axis}+")
-        await trio.sleep(0)
+    def set_origin(self):
+        self.parent.send_cmd("H", f"{self.axis}")
 
-    async def get_limits(self):
+    def get_limits(self):
         response = self.parent.send_cmd("SL", f"{self.axis}?")
         lo = float(response.split("=")[1])
         response = self.parent.send_cmd("SU", f"{self.axis}?")
         hi = float(response.split("=")[1])
-        await trio.sleep(0)
         return lo, hi
 
-    async def set_limits(self, lim):
+    def get_limit_status(self):
+        flag = self.parent.send_cmd("RS", f"{self.axis}-")
+        return {"U": LimitStatus.UpperLimit, "L": LimitStatus.LowerLimit}.get(
+            flag, LimitStatus.WithinRange
+        )
+
+    def set_limits(self, lim):
         lo, hi = tuple(lim)
-        self.parent.send_cmd("SL", self.axis, lo)
-        self.parent.send_cmd("AU", self.axis, hi)
+        self.parent.send_cmd("SL", **{self.axis: lo})
+        self.parent.send_cmd("SU", **{self.axis: hi})
 
     ##
 
-    async def calibrate(self, unit_step=1):
-        # run until negative limit
-        while not self._is_limit_switch_triggered("-"):
-            await self.set_relative_position(-unit_step)
-        lo = await self.get_position()
+    async def calibrate(self, vel=5):
+        """
+             -------|--
+        1)          ==| N
+        2)   |========= P
+        3)   =======|
+        """
+        logger.debug(f"axis {self.axis} calibration started...")
 
-        # run until positive limit
-        while not self._is_limit_switch_triggered("+"):
-            await self.set_relative_position(unit_step)
-        hi = await self.get_position()
+        # reset limit to an impossible value (1 meter)
+        self.set_limits((-1000, 1000))
 
-        logger.debug(f"current range [{lo}, {hi}]")
+        # remember current position
+        ref = self.get_position()
+
+        # run until upper limit
+        self.move_continuous(vel)
+        while self.get_limit_status() != LimitStatus.UpperLimit:
+            await trio.sleep(0)
+        hi = self.get_position()
+        # run until lower limit
+        self.move_continuous(-vel)
+        while self.get_limit_status() != LimitStatus.LowerLimit:
+            await trio.sleep(0)
+        lo = self.get_position()
+        logger.debug(f".. current {self.axis} limits [{lo}, {hi}]")
 
         # move to center
-        center = (hi + lo) / 2.0
-        await self.set_absolute_position(center)
-
+        full = hi - lo
+        half = full / 2.0
+        await self.move_relative(half)
         # reset
-        await self.set_origin()
+        self.set_origin()
+        # update limits
+        self.set_limits((-half, half))
 
-    def _is_limit_switch_triggered(self, direction):
-        assert direction in "+-", "unknown direction flag"
+        # move to original position
+        await self.move_relative((ref - lo) - half)
 
-        flag = "U" if direction == "+" else "L"
-        return self.parent.send_cmd("RS", f"{self.axis}-") == flag
-
-    async def stop(self, emergency=False):
+    def stop(self, emergency=False):
         self.parent.send_cmd("\\")
 
     async def wait(self):
         while self.is_busy:
-            pos = await self.get_position()
-            logger.debug(f"{self.axis}: {pos}")
             await trio.sleep(1)
 
     ##
@@ -237,7 +267,7 @@ class ASISerialCommandController(MotionController):
 
     ##
 
-    def send_cmd(self, *args, **kwargs):
+    def send_cmd(self, *args, address="", term=b"\r\n", **kwargs):
         # 1) compact
         args = [str(arg) for arg in args]
         kwargs = [f"{str(k)}={v}" for k, v in kwargs.items()]
@@ -246,14 +276,14 @@ class ASISerialCommandController(MotionController):
         cmd = " ".join(args + kwargs)
 
         # 3) response format
-        cmd = f"{cmd}\r".encode()
+        cmd = f"{address}{cmd}\r".encode()
         logger.debug(f"SEND {cmd}")
 
         # 4) send
         self.handle.write(cmd)
 
         # 5) ack
-        response = self.handle.read_until(b"\r\n")
+        response = self.handle.read_until(term)
         # ... ensure multi-line response is received properly
         response = response.replace(b"\r", b"\n")
         response = response.decode("ascii").rstrip()
@@ -264,7 +294,7 @@ class ASISerialCommandController(MotionController):
 
     def _check_error(self, response):
         if response.startswith(":N"):
-            errno = int(response[2:])
+            errno = int(response[3:])  # neglect the sign
             ASISerialCommandController.interpret_error(errno)
         elif response.startswith(":A"):
             return response[2:].strip()
