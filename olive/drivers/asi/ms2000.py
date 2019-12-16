@@ -72,7 +72,7 @@ class LX4000(MS2000):
     async def _open(self):
         self.handle.open()
 
-        model = self.send_cmd("BU")
+        model = self.send_cmd("N")
 
         # create info
         version = self.send_cmd("V")
@@ -82,7 +82,7 @@ class LX4000(MS2000):
     ##
 
     def send_cmd(self, *args, **kwargs):
-        kwargs.update({"address": "2H", "term": "\r\n\3"})
+        kwargs.update({"address": "2H", "term": b"\r\n\3"})
         # TODO switch address
         return super().send_cmd(*args, **kwargs)
 
