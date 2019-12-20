@@ -32,11 +32,11 @@ async def action(axis):
         pos = axis.get_position()
         logger.info(f"{axis_id}, pos: {pos}")
 
-        # logger.info(f"{axis_id}, 1, reset")
-        # await axis.set_absolute_position(0)
+        logger.info(f"{axis_id}, 1, reset")
+        await axis.move_absolute(0)
 
-        # logger.info(f"{axis_id}, 2, shift")
-        # await axis.set_absolute_position(10)
+        #logger.info(f"{axis_id}, 2, shift")
+        #await axis.move_absolute(1000)
 
         # logger.info(f"{axis_id}, 3, set home")
         # await axis.set_origin()
@@ -52,8 +52,8 @@ async def action(axis):
 
 
 async def main():
-    #controller = MS2000(None, "COM5", baudrate=9600)
-    controller = LX4000(None, "COM10", baudrate=115200)
+    controller = MS2000(None, "COM5", baudrate=9600)
+    #controller = LX4000(None, "COM10", baudrate=115200)
 
     await controller.test_open()
     try:

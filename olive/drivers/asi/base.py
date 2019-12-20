@@ -277,17 +277,18 @@ class ASISerialCommandController(MotionController):
 
         # 3) response format
         cmd = f"{address}{cmd}\r".encode()
-        logger.debug(f"SEND {cmd}")
+        # logger.debug(f"SEND {cmd}")
 
         # 4) send
         self.handle.write(cmd)
 
         # 5) ack
         response = self.handle.read_until(term)
+        response = response[: -len(term)]
         # ... ensure multi-line response is received properly
         response = response.replace(b"\r", b"\n")
         response = response.decode("ascii").rstrip()
-        logger.debug(f"RECV {response}")
+        # logger.debug(f"RECV {response}")
         response = self._check_error(response)
 
         return response

@@ -61,8 +61,6 @@ class LX4000(MS2000):
 
             # test controller string
             name = self.send_cmd("N")
-            print(name)
-
             if not name.startswith("ASI-MS2000"):
                 raise UnsupportedDeviceError
             logger.info(f".. {self.info}")
@@ -72,8 +70,6 @@ class LX4000(MS2000):
     async def _open(self):
         self.handle.open()
 
-        model = self.send_cmd("N")
-
         # create info
         version = self.send_cmd("V")
         _, version = version.split(" ")
@@ -82,7 +78,7 @@ class LX4000(MS2000):
     ##
 
     def send_cmd(self, *args, **kwargs):
-        kwargs.update({"address": "2H", "term": b"\r\n\3"})
+        kwargs.update({"address": "3H", "term": b"\r\n\3"})
         # TODO switch address
         return super().send_cmd(*args, **kwargs)
 
