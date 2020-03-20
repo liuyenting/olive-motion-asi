@@ -1,8 +1,8 @@
 import logging
 from typing import Union
 
-from olive.core import DeviceInfo
-from olive.devices.errors import UnsupportedDeviceError
+from olive.devices.base import DeviceInfo
+from olive.devices.errors import UnsupportedClassError
 
 from .base import ASIAxis, ASISerialCommandController
 
@@ -19,7 +19,7 @@ class MS2000(ASISerialCommandController):
             # test controller string
             name = self.send_cmd("N")
             if not name.startswith("ASI-MS2000"):
-                raise UnsupportedDeviceError
+                raise UnsupportedClassError
             logger.info(f".. {self.info}")
         finally:
             await self.close()
@@ -49,7 +49,7 @@ class MS2000(ASISerialCommandController):
                 axis = ASIAxis(self, axis)
                 await axis.test_open()
                 valid_axes.append(axis)
-            except UnsupportedDeviceError:
+            except UnsupportedClassError:
                 pass
         return tuple(valid_axes)
 
@@ -62,7 +62,7 @@ class LX4000(MS2000):
             # test controller string
             name = self.send_cmd("N")
             if not name.startswith("ASI-MS2000"):
-                raise UnsupportedDeviceError
+                raise UnsupportedClassError
             logger.info(f".. {self.info}")
         finally:
             await self.close()

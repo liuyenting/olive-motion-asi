@@ -4,7 +4,7 @@ from pprint import pprint
 import coloredlogs
 import trio
 
-from olive.devices.errors import UnsupportedDeviceError
+from olive.devices.errors import UnsupportedClassError
 from olive.drivers.asi import LX4000, MS2000, Tiger
 
 coloredlogs.install(

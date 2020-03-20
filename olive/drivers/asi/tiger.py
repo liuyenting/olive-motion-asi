@@ -1,7 +1,7 @@
 import logging
 from typing import Union
 
-from olive.devices.errors import UnsupportedDeviceError
+from olive.devices.errors import UnsupportedClassError
 
 from .base import ASIAxis, ASISerialCommandController
 
@@ -17,7 +17,7 @@ class Tiger(ASISerialCommandController):
 
             # test controller string
             if self.info.model != "TIGER_COMM":
-                raise UnsupportedDeviceError
+                raise UnsupportedClassError
             logger.info(f".. {self.info}")
         finally:
             await self.close()
@@ -76,6 +76,6 @@ class Tiger(ASISerialCommandController):
                 axis = ASIAxis(self, axis)
                 await axis.test_open()
                 valid_axes.append(axis)
-            except UnsupportedDeviceError:
+            except UnsupportedClassError:
                 pass
         return tuple(valid_axes)

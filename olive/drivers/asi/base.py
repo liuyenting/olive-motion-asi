@@ -3,10 +3,10 @@ import logging
 import trio
 from serial import Serial
 
-from olive.core import DeviceInfo
+from olive.devices.base import DeviceInfo
 from olive.devices import MotionController
 from olive.devices.errors import (
-    UnsupportedDeviceError,
+    UnsupportedClassError,
     OutOfRangeError,
     UnknownCommandError,
 )
@@ -34,7 +34,7 @@ class ASIAxis(Axis):
             await self.open()
             flag = self.parent.send_cmd("RS", f"{self.axis}-")
             if flag == "D":
-                raise UnsupportedDeviceError("axis not connected")
+                raise UnsupportedClassError("axis not connected")
             logger.info(f".. {self.info}")
         finally:
             await self.close()
